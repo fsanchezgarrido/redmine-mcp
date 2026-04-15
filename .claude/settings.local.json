@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm init *)",
+      "Bash(npm install *)",
+      "Bash(node -e \"const z = require\\('zod'\\); console.log\\(z.ZodError ? 'zod ok' : 'zod v?'\\)\")",
+      "Bash(npm run *)"
+    ]
+  },
+  "enabledPlugins": {
+    "document-skills@anthropic-agent-skills": false,
+    "example-skills@anthropic-agent-skills": false
+  }
+}
