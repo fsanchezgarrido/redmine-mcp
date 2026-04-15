@@ -36,6 +36,31 @@ REPORT_OUTPUT_DIR=./reports
 
 Para obtener tu API key: Redmine → _Mi cuenta_ → _Clave de acceso a la API_.
 
+## Certificados TLS corporativos
+
+Si Redmine usa un certificado firmado por una CA interna (error `UNABLE_TO_VERIFY_LEAF_SIGNATURE`):
+
+### Opción A — `--use-system-ca` (recomendada)
+
+Node.js 22+ puede leer el almacén de certificados de Windows, donde tu CA corporativa ya está instalada. No deshabilita la verificación TLS.
+
+Verifica que funciona:
+```bash
+node --use-system-ca scripts/test-connection.mjs
+```
+
+El script `npm start` ya incluye este flag. En la configuración del MCP (VS Code / VS 2026) añade `--use-system-ca` como primer argumento:
+```json
+"args": ["--use-system-ca", "C:/ruta/redmine-mcp/dist/index.js"]
+```
+
+### Opción B — `REDMINE_TLS_INSECURE=true`
+
+Deshabilita la verificación del certificado. Usar solo si la opción A no funciona:
+```env
+REDMINE_TLS_INSECURE=true
+```
+
 ## Integración con GitHub Copilot en VS Code
 
 ### Opción A: Fichero de configuración global (`~/.copilot/mcp.json`)
@@ -47,7 +72,7 @@ Abre la paleta de comandos (`Ctrl+Shift+P`) → **MCP: Open User Configuration**
   "servers": {
     "redmine-mcp": {
       "command": "node",
-      "args": ["C:/ruta/al/repo/redmine-mcp/dist/index.js"],
+      "args": ["--use-system-ca", "C:/ruta/al/repo/redmine-mcp/dist/index.js"],
       "env": {
         "REDMINE_URL": "https://redmine.miempresa.com",
         "REDMINE_API_KEY": "tu_api_key",

@@ -6,8 +6,9 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "tsx src/index.ts"
+    "start": "node --use-system-ca dist/index.js",
+    "start:insecure": "node dist/index.js",
+    "dev": "tsx --node-options=--use-system-ca src/index.ts"
   },
   "repository": {
     "type": "git",

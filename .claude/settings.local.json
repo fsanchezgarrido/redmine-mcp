@@ -6,7 +6,8 @@
       "Bash(node -e \"const z = require\\('zod'\\); console.log\\(z.ZodError ? 'zod ok' : 'zod v?'\\)\")",
       "Bash(npm run *)",
       "Bash(node -e \"const { Agent } = require\\('node:http'\\); console.log\\('ok'\\)\")",
-      "Bash(node -e \"import\\('node:undici'\\).then\\(m => console.log\\(Object.keys\\(m\\)\\)\\).catch\\(e => console.log\\('no undici:', e.message\\)\\)\")"
+      "Bash(node -e \"import\\('node:undici'\\).then\\(m => console.log\\(Object.keys\\(m\\)\\)\\).catch\\(e => console.log\\('no undici:', e.message\\)\\)\")",
+      "Bash(node scripts/test-connection.mjs)"
     ]
   },
   "enabledPlugins": {

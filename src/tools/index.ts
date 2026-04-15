@@ -4,6 +4,7 @@ import {
   getIssueReportOutputSchema,
   handleGetIssueReport,
 } from "./getIssueReport.js";
+import { pingOutputSchema, handlePing } from "./ping.js";
 
 export function registerTools(server: McpServer): void {
   server.registerTool(
@@ -22,5 +23,23 @@ export function registerTools(server: McpServer): void {
       },
     },
     handleGetIssueReport
+  );
+
+  server.registerTool(
+    "redmine_ping",
+    {
+      title: "Diagnóstico de conexión Redmine",
+      description:
+        "Comprueba la conectividad con el servidor Redmine configurado y devuelve un diagnóstico detallado. Útil para depurar problemas de red, TLS o autenticación.",
+      inputSchema: {},
+      outputSchema: pingOutputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    handlePing
   );
 }
