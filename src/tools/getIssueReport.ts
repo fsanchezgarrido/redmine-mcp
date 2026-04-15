@@ -46,7 +46,11 @@ export const getIssueReportOutputSchema = {
   markdownReport: z.string().describe("Informe completo en Markdown"),
 };
 
-const redmineClient = new RedmineClient(config.redmine.url, config.redmine.apiKey);
+const redmineClient = new RedmineClient(
+  config.redmine.url,
+  config.redmine.apiKey,
+  config.redmine.tlsInsecure
+);
 
 export async function handleGetIssueReport(args: {
   issueId: number;

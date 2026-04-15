@@ -1,3 +1,4 @@
+import { Agent, fetch as undiciFetch } from "undici";
 import type { RedmineIssue, RedmineIssueResponse } from "./types.js";
 
 const DEFAULT_INCLUDES = [
@@ -10,10 +11,20 @@ const DEFAULT_INCLUDES = [
 ].join(",");
 
 export class RedmineClient {
+  private readonly dispatcher: Agent | undefined;
+
   constructor(
     private readonly baseUrl: string,
-    private readonly apiKey: string
-  ) {}
+    private readonly apiKey: string,
+    tlsInsecure = false
+  ) {
+    if (tlsInsecure) {
+      this.dispatcher = new Agent({ connect: { rejectUnauthorized: false } });
+      process.stderr.write(
+        "[redmine-mcp] Advertencia: REDMINE_TLS_INSECURE=true — la verificación del certificado TLS está desactivada.\n"
+      );
+    }
+  }
 
   async getIssue(
     issueId: number,
@@ -23,15 +34,20 @@ export class RedmineClient {
 
     let response: Response;
     try {
-      response = await fetch(url, {
+      const fetchFn = this.dispatcher ? undiciFetch : fetch;
+      response = (await fetchFn(url, {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ...(this.dispatcher ? { dispatcher: this.dispatcher } as any : {}),
         headers: {
           "X-Redmine-API-Key": this.apiKey,
           "Content-Type": "application/json",
         },
-      });
+      })) as Response;
     } catch (err) {
       throw new Error(
-        `No se pudo conectar con Redmine (${this.baseUrl}). Verifica REDMINE_URL y la conectividad de red.\nDetalle: ${String(err)}`
+        `No se pudo conectar con Redmine (${this.baseUrl}). Verifica REDMINE_URL y la conectividad de red.\n` +
+        `Si el servidor usa un certificado autofirmado, añade REDMINE_TLS_INSECURE=true al fichero .env.\n` +
+        `Detalle: ${String(err)}`
       );
     }
 
