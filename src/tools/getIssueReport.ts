@@ -2,9 +2,9 @@ import { z } from "zod";
 import { config } from "../config.js";
 import { RedmineClient } from "../redmine/client.js";
 import { getCommitInfo, getBranchInfo } from "../git/inspector.js";
+import type { GitContext } from "../git/inspector.js";
 import { buildReport } from "../report/builder.js";
 import { writeReport } from "../report/writer.js";
-import type { GitContext } from "../report/sections.js";
 
 export const getIssueReportInputSchema = {
   issueId: z
@@ -64,20 +64,17 @@ export async function handleGetIssueReport(args: {
   // 1. Fetch issue from Redmine
   const issue = await redmineClient.getIssue(issueId);
 
-  // 2. Optionally gather Git context
+  // 2. Optionally gather Git context (includes actual code diff)
   let gitContext: GitContext | undefined;
   if (includeGitContext) {
     try {
       if (gitCommit) {
-        const data = await getCommitInfo(config.git.repoPath, gitCommit);
-        gitContext = { type: "commit", data };
+        gitContext = await getCommitInfo(config.git.repoPath, gitCommit);
       } else {
         const branch = gitBranch ?? config.git.defaultBranch;
-        const data = await getBranchInfo(config.git.repoPath, branch);
-        gitContext = { type: "branch", data };
+        gitContext = await getBranchInfo(config.git.repoPath, branch);
       }
     } catch (err) {
-      // Git context is optional — log to stderr and continue without it
       process.stderr.write(
         `[redmine-mcp] Advertencia: no se pudo obtener el contexto Git. El informe se generará sin información Git.\n${String(err)}\n`
       );

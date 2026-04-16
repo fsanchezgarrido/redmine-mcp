@@ -1,5 +1,5 @@
 import type { RedmineIssue } from "../redmine/types.js";
-import type { GitContext } from "./sections.js";
+import type { GitContext } from "../git/inspector.js";
 import {
   sectionHeader,
   sectionIssueNumber,
@@ -28,7 +28,7 @@ export function buildReport(issue: RedmineIssue, git?: GitContext): string {
     sectionUserManagement(issue, git),
     sectionConfigManagement(issue, git),
     sectionChangeControl(issue),
-    sectionTests(issue),
+    sectionTests(issue, git),
   ];
 
   return sections.join("\n---\n\n");
