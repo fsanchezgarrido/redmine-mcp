@@ -1,4 +1,4 @@
-import type { RedmineIssue, Journal, CustomField } from "../redmine/types.js";
+import type { RedmineIssue, Journal } from "../redmine/types.js";
 import type { GitContext } from "../git/inspector.js";
 
 export type { GitContext };
@@ -22,46 +22,90 @@ function journalNotes(journals: Journal[]): string {
     .join("\n");
 }
 
-/**
- * Extrae del diff unificado solo las secciones (hunks) de los ficheros
- * cuyos paths coincidan con alguno de los patrones dados.
- * Devuelve el código recortado a `maxChars`.
- */
-function extractDiffHunks(diff: string, patterns: RegExp[], maxChars = 4000): string {
-  if (!diff.trim()) return "";
-
-  // Cada sección empieza con "diff --git a/..."
-  const sections = diff.split(/(?=^diff --git )/m).filter(Boolean);
-
-  const relevant = sections.filter((s) => patterns.some((p) => p.test(s)));
-  if (!relevant.length) return "";
-
-  const joined = relevant.join("\n");
-  if (joined.length <= maxChars) return joined;
-  return joined.slice(0, maxChars) + `\n... [recortado — ${joined.length - maxChars} caracteres adicionales] ...`;
-}
-
-/** Devuelve el diff completo sin las secciones que corresponden a patrones excluidos */
-function diffExcluding(diff: string, excludePatterns: RegExp[], maxChars = 5000): string {
-  if (!diff.trim()) return "";
-  const sections = diff.split(/(?=^diff --git )/m).filter(Boolean);
-  const relevant = sections.filter((s) => !excludePatterns.some((p) => p.test(s)));
-  if (!relevant.length) return "";
-  const joined = relevant.join("\n");
-  if (joined.length <= maxChars) return joined;
-  return joined.slice(0, maxChars) + `\n... [recortado — ${joined.length - maxChars} caracteres adicionales] ...`;
-}
-
 function hasKeyword(text: string, keywords: string[]): boolean {
   const lower = text.toLowerCase();
   return keywords.some((kw) => lower.includes(kw));
 }
 
-// Patrones para clasificar ficheros del diff
-const DB_PATTERNS = [/migration/i, /\.sql\b/i, /schema/i, /seed/i, /flyway/i, /liquibase/i];
-const AUTH_PATTERNS = [/\brole/i, /permission/i, /\bacl\b/i, /\bauth/i, /\bacceso/i, /\bidentity/i, /\bpolicy/i, /\bclaim/i];
-const CONFIG_PATTERNS = [/appsettings/i, /\.env/i, /\bconfig\b/i, /settings/i, /\.yml$/i, /\.yaml$/i, /\.properties$/i, /web\.config/i];
-const ALL_SPECIAL = [...DB_PATTERNS, ...AUTH_PATTERNS, ...CONFIG_PATTERNS];
+// Extensión → lenguaje para bloques de código
+const EXT_LANG: Record<string, string> = {
+  cs: "csharp", ts: "typescript", js: "javascript", tsx: "tsx", jsx: "jsx",
+  py: "python", java: "java", rb: "ruby", go: "go", cpp: "cpp", c: "c",
+  sql: "sql", xml: "xml", json: "json", yml: "yaml", yaml: "yaml",
+  html: "html", css: "css", scss: "scss", sh: "bash", ps1: "powershell",
+};
+
+function langFromPath(filePath: string): string {
+  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+  return EXT_LANG[ext] ?? ext;
+}
+
+// Patrones para clasificar secciones del diff por nombre de fichero
+const DB_PATTERNS      = [/migration/i, /\.sql\b/i, /\bschema\b/i, /seed/i, /flyway/i, /liquibase/i];
+const AUTH_PATTERNS    = [/\brole/i, /permission/i, /\bacl\b/i, /\bauth/i, /\bidentity/i, /\bpolicy/i, /\bclaim/i];
+const CONFIG_PATTERNS  = [/appsettings/i, /\.env/i, /\bconfig\b/i, /\bsettings\b/i, /\.ya?ml$/i, /\.properties$/i, /web\.config/i];
+const ALL_SPECIAL      = [...DB_PATTERNS, ...AUTH_PATTERNS, ...CONFIG_PATTERNS];
+
+/**
+ * Extrae las líneas **añadidas** (`+`) del diff para los ficheros que coincidan
+ * con algún patrón. Devuelve bloques de código agrupados por fichero.
+ * maxLinesPerFile y maxFiles limitan el tamaño total.
+ */
+function extractNewCode(
+  diff: string,
+  matchPatterns: RegExp[],
+  maxLinesPerFile = 25,
+  maxFiles = 4
+): string {
+  if (!diff.trim()) return "";
+
+  const sections = diff.split(/(?=^diff --git )/m).filter(Boolean);
+
+  const relevant = matchPatterns.length
+    ? sections.filter((s) => matchPatterns.some((p) => p.test(s)))
+    : sections;
+
+  const snippets: string[] = [];
+
+  for (const section of relevant.slice(0, maxFiles)) {
+    const fileMatch = section.match(/^diff --git a\/(.+?) b\//m);
+    const filePath = fileMatch?.[1] ?? "unknown";
+
+    const addedLines = section
+      .split("\n")
+      .filter((l) => l.startsWith("+") && !l.startsWith("+++"))
+      .map((l) => l.slice(1))
+      .filter((l) => l.trim().length > 0); // omit blank added lines
+
+    if (!addedLines.length) continue;
+
+    const shown = addedLines.slice(0, maxLinesPerFile);
+    const omitted = addedLines.length - shown.length;
+    const lang = langFromPath(filePath);
+    const omittedNote = omitted > 0 ? `\n// ... ${omitted} líneas adicionales omitidas` : "";
+
+    snippets.push(
+      `**\`${filePath}\`**\n\`\`\`${lang}\n${shown.join("\n")}${omittedNote}\n\`\`\``
+    );
+  }
+
+  const remaining = relevant.length - Math.min(relevant.length, maxFiles);
+  if (remaining > 0) {
+    snippets.push(`_... y ${remaining} fichero(s) adicional(es) con cambios._`);
+  }
+
+  return snippets.join("\n\n");
+}
+
+/** Mismo que extractNewCode pero excluye los ficheros especiales */
+function extractNewCodeGeneral(diff: string, maxLinesPerFile = 25, maxFiles = 5): string {
+  if (!diff.trim()) return "";
+  const sections = diff.split(/(?=^diff --git )/m).filter(Boolean);
+  const general = sections.filter((s) => !ALL_SPECIAL.some((p) => p.test(s)));
+  // Reutilizamos la lógica pasando el diff ya filtrado
+  const filtered = general.join("\n");
+  return extractNewCode(filtered, [], maxLinesPerFile, maxFiles);
+}
 
 // ── Section builders ────────────────────────────────────────────────────────
 
@@ -90,17 +134,13 @@ export function sectionCloseDate(issue: RedmineIssue): string {
 // ── Análisis ───────────────────────────────────────────────────────────────
 
 export function sectionAnalysis(issue: RedmineIssue, git?: GitContext): string {
-  const context: string[] = [];
+  const parts: string[] = [];
 
   const desc = issue.description?.trim();
-  if (desc) {
-    context.push(`**Descripción del issue:**\n${desc}`);
-  }
+  if (desc) parts.push(`**Descripción:**\n${desc}`);
 
   const notes = journalNotes(issue.journals ?? []);
-  if (notes) {
-    context.push(`**Historial de notas:**\n${notes}`);
-  }
+  if (notes) parts.push(`**Historial de notas:**\n${notes}`);
 
   if (git) {
     const commits =
@@ -109,123 +149,77 @@ export function sectionAnalysis(issue: RedmineIssue, git?: GitContext): string {
         : git.data.recentCommits
             .map((c) => `- \`${c.shortSha}\` ${c.message} — _${c.author}_, ${c.date}`)
             .join("\n");
-    if (commits) context.push(`**Commits relacionados:**\n${commits}`);
+    if (commits) parts.push(`**Commits relacionados:**\n${commits}`);
   }
 
-  const dataBlock = context.length
-    ? context.join("\n\n")
-    : "_No hay datos en Redmine para esta sección._";
+  const context = parts.length
+    ? parts.join("\n\n")
+    : "_Sin datos disponibles en Redmine para esta sección._";
 
-  return [
-    `## Análisis`,
-    ``,
-    `<!-- DATOS DISPONIBLES -->`,
-    dataBlock,
-    ``,
-    `<!-- INSTRUCCIÓN PARA EL AI -->`,
-    `> Basándote en los datos anteriores, redacta el análisis explicando:`,
-    `> la **situación anterior**, el **problema o limitación detectada**, el **impacto funcional** y qué se **mejora o corrige** con esta issue.`,
-    `> Si no hay datos suficientes, indícalo explícitamente.`,
-    ``,
-  ].join("\n");
+  return `## Análisis\n\n${context}\n`;
 }
 
 // ── Diseño de la solución ──────────────────────────────────────────────────
 
 export function sectionDesign(issue: RedmineIssue, git?: GitContext): string {
-  const context: string[] = [];
+  const parts: string[] = [];
 
-  // Notas técnicas de los journals
-  const techNotes = (issue.journals ?? [])
-    .filter((j) => j.notes?.trim())
-    .map((j) => `- **${j.user.name}** (${formatDate(j.created_on)}): ${j.notes.trim()}`);
-  if (techNotes.length) {
-    context.push(`**Notas del equipo:**\n${techNotes.join("\n")}`);
-  }
+  const notes = journalNotes(issue.journals ?? []);
+  if (notes) parts.push(`**Notas del equipo:**\n${notes}`);
 
-  // Código del diff (excluyendo secciones especiales que tienen su propia sección)
   if (git?.diff) {
-    const codeHunks = diffExcluding(git.diff, ALL_SPECIAL, 5000);
-    if (codeHunks) {
-      context.push(`**Cambios de código:**\n\`\`\`diff\n${codeHunks}\n\`\`\``);
-    }
+    const code = extractNewCodeGeneral(git.diff, 25, 5);
+    if (code) parts.push(`**Nuevas implementaciones relevantes:**\n\n${code}`);
   }
 
-  const dataBlock = context.length
-    ? context.join("\n\n")
-    : "_No hay datos de solución técnica disponibles._";
+  const context = parts.length
+    ? parts.join("\n\n")
+    : "_Sin notas técnicas ni cambios de código disponibles._";
 
-  return [
-    `## Diseño de la solución`,
-    ``,
-    `<!-- DATOS DISPONIBLES -->`,
-    dataBlock,
-    ``,
-    `<!-- INSTRUCCIÓN PARA EL AI -->`,
-    `> Basándote en los datos anteriores, describe:`,
-    `> la **solución técnica implementada**, la **lógica aplicada**, **validaciones y reglas de negocio**,`,
-    `> cambios en **frontend**, **backend** o **base de datos** si aplica, e incluye fragmentos de código relevantes.`,
-    `> Explica **por qué se eligió** esta solución frente a otras opciones.`,
-    ``,
-  ].join("\n");
+  return `## Diseño de la solución\n\n${context}\n`;
 }
 
 // ── Modelo de datos ────────────────────────────────────────────────────────
 
 export function sectionDataModel(issue: RedmineIssue, git?: GitContext): string {
-  const context: string[] = [];
+  const parts: string[] = [];
 
   if (git?.diff) {
-    const dbHunks = extractDiffHunks(git.diff, DB_PATTERNS, 4000);
-    if (dbHunks) {
-      context.push(`**Cambios en base de datos (migraciones / SQL / schema):**\n\`\`\`diff\n${dbHunks}\n\`\`\``);
-    }
+    const code = extractNewCode(git.diff, DB_PATTERNS, 30, 4);
+    if (code) parts.push(`**Cambios en base de datos:**\n\n${code}`);
   }
 
-  // Menciones en journals
   const dbMentions = (issue.journals ?? []).filter((j) =>
     hasKeyword(j.notes ?? "", ["tabla", "columna", "campo", "migración", "migracion", "bbdd", "schema", "base de datos", "foreign key", "índice", "index"])
   );
   if (dbMentions.length) {
-    context.push(
+    parts.push(
       `**Menciones en el seguimiento:**\n${dbMentions.map((j) => `- **${j.user.name}**: ${j.notes.trim()}`).join("\n")}`
     );
   }
 
-  if (!context.length) {
+  if (!parts.length) {
     return `## Modelo de datos\n\nNo aplica\n`;
   }
 
-  return [
-    `## Modelo de datos`,
-    ``,
-    `<!-- DATOS DISPONIBLES -->`,
-    context.join("\n\n"),
-    ``,
-    `<!-- INSTRUCCIÓN PARA EL AI -->`,
-    `> Describe los **cambios estructurales en base de datos** (tablas, columnas, índices, relaciones).`,
-    `> Si solo hay metadatos o cambios menores (sin DDL), acláralos.`,
-    ``,
-  ].join("\n");
+  return `## Modelo de datos\n\n${parts.join("\n\n")}\n`;
 }
 
 // ── Gestión de usuarios ────────────────────────────────────────────────────
 
 export function sectionUserManagement(issue: RedmineIssue, git?: GitContext): string {
-  const context: string[] = [];
+  const parts: string[] = [];
 
   if (git?.diff) {
-    const authHunks = extractDiffHunks(git.diff, AUTH_PATTERNS, 3000);
-    if (authHunks) {
-      context.push(`**Cambios en control de acceso / roles / permisos:**\n\`\`\`diff\n${authHunks}\n\`\`\``);
-    }
+    const code = extractNewCode(git.diff, AUTH_PATTERNS, 20, 3);
+    if (code) parts.push(`**Cambios en control de acceso:**\n\n${code}`);
   }
 
   const roleMentions = (issue.journals ?? []).filter((j) =>
     hasKeyword(j.notes ?? "", ["rol", "role", "permiso", "permission", "acceso", "acl", "usuario", "claim", "policy"])
   );
   if (roleMentions.length) {
-    context.push(
+    parts.push(
       `**Menciones en el seguimiento:**\n${roleMentions.map((j) => `- **${j.user.name}**: ${j.notes.trim()}`).join("\n")}`
     );
   }
@@ -234,66 +228,44 @@ export function sectionUserManagement(issue: RedmineIssue, git?: GitContext): st
     issue.description ?? "",
     ["rol", "role", "permiso", "permission", "acceso", "acl", "claim", "policy"]
   );
-  if (descMention && !context.length) {
-    context.push("_La descripción menciona aspectos de roles/permisos/accesos — ver sección Descripción._");
+  if (descMention && !parts.length) {
+    parts.push("_La descripción menciona aspectos de roles/permisos — ver sección Descripción._");
   }
 
-  if (!context.length) {
+  if (!parts.length) {
     return `## Gestión de usuarios\n\nNo aplica\n`;
   }
 
-  return [
-    `## Gestión de usuarios`,
-    ``,
-    `<!-- DATOS DISPONIBLES -->`,
-    context.join("\n\n"),
-    ``,
-    `<!-- INSTRUCCIÓN PARA EL AI -->`,
-    `> Describe el **impacto en roles, permisos o accesos** de usuario.`,
-    `> Indica qué perfiles se ven afectados y cómo cambia su experiencia o capacidades.`,
-    ``,
-  ].join("\n");
+  return `## Gestión de usuarios\n\n${parts.join("\n\n")}\n`;
 }
 
 // ── Gestión de la configuración ────────────────────────────────────────────
 
 export function sectionConfigManagement(issue: RedmineIssue, git?: GitContext): string {
-  const context: string[] = [];
+  const parts: string[] = [];
 
   if (git?.diff) {
-    const cfgHunks = extractDiffHunks(git.diff, CONFIG_PATTERNS, 3000);
-    if (cfgHunks) {
-      context.push(`**Cambios en ficheros de configuración:**\n\`\`\`diff\n${cfgHunks}\n\`\`\``);
-    }
+    const code = extractNewCode(git.diff, CONFIG_PATTERNS, 20, 3);
+    if (code) parts.push(`**Cambios de configuración:**\n\n${code}`);
   }
 
   const cfgMentions = (issue.journals ?? []).filter((j) =>
     hasKeyword(j.notes ?? "", [
       "configuración", "configuracion", "config", "settings", "parámetro",
-      "parametro", "variable", "appsettings", "featureflag", "feature flag",
+      "parametro", "variable", "appsettings", "feature flag",
     ])
   );
   if (cfgMentions.length) {
-    context.push(
+    parts.push(
       `**Menciones en el seguimiento:**\n${cfgMentions.map((j) => `- **${j.user.name}**: ${j.notes.trim()}`).join("\n")}`
     );
   }
 
-  if (!context.length) {
+  if (!parts.length) {
     return `## Gestión de la configuración\n\nNo aplica\n`;
   }
 
-  return [
-    `## Gestión de la configuración`,
-    ``,
-    `<!-- DATOS DISPONIBLES -->`,
-    context.join("\n\n"),
-    ``,
-    `<!-- INSTRUCCIÓN PARA EL AI -->`,
-    `> Describe los **cambios de configuración** de la aplicación o funcionales en base de datos.`,
-    `> Indica nuevos parámetros, valores por defecto y si requieren acción en los entornos (DEV/PRE/PRO).`,
-    ``,
-  ].join("\n");
+  return `## Gestión de la configuración\n\n${parts.join("\n\n")}\n`;
 }
 
 // ── Control de cambios ─────────────────────────────────────────────────────
@@ -313,9 +285,8 @@ export function sectionChangeControl(issue: RedmineIssue): string {
     }
   }
 
-  const changesets = issue.changesets ?? [];
-  if (changesets.length) {
-    const lines = changesets.map(
+  if (issue.changesets?.length) {
+    const lines = issue.changesets.map(
       (cs) => `- \`${cs.revision}\` ${cs.comments} — ${formatDate(cs.committed_on)}`
     );
     parts.push(`**Changesets en Redmine:**\n${lines.join("\n")}`);
@@ -331,40 +302,23 @@ export function sectionChangeControl(issue: RedmineIssue): string {
 // ── Pruebas ────────────────────────────────────────────────────────────────
 
 export function sectionTests(issue: RedmineIssue, git?: GitContext): string {
-  const context: string[] = [];
+  const parts: string[] = [];
 
   const desc = issue.description?.trim();
-  if (desc) context.push(`**Descripción del issue:**\n${desc}`);
+  if (desc) parts.push(`**Descripción del issue:**\n${desc}`);
 
   const notes = journalNotes(issue.journals ?? []);
-  if (notes) context.push(`**Notas del equipo:**\n${notes}`);
+  if (notes) parts.push(`**Notas del equipo:**\n${notes}`);
 
-  // Código general (sin secciones especiales) para dar contexto de qué cambió
+  // Solo firmas/funciones nuevas relevantes para inferir casos de prueba
   if (git?.diff) {
-    const codeHunks = diffExcluding(git.diff, ALL_SPECIAL, 3000);
-    if (codeHunks) {
-      context.push(`**Cambios de código relevantes:**\n\`\`\`diff\n${codeHunks}\n\`\`\``);
-    }
+    const code = extractNewCodeGeneral(git.diff, 15, 3);
+    if (code) parts.push(`**Funciones/métodos nuevos:**\n\n${code}`);
   }
 
-  const dataBlock = context.length
-    ? context.join("\n\n")
-    : "_No hay datos suficientes para inferir casos de prueba._";
+  const context = parts.length
+    ? parts.join("\n\n")
+    : "_Sin datos suficientes para inferir casos de prueba._";
 
-  return [
-    `## Pruebas`,
-    ``,
-    `<!-- DATOS DISPONIBLES -->`,
-    dataBlock,
-    ``,
-    `<!-- INSTRUCCIÓN PARA EL AI -->`,
-    `> Basándote en los datos anteriores, describe casos de prueba con **pasos claros y resultado esperado** para:`,
-    `>`,
-    `> **Casos positivos (happy path):** flujos principales que deben funcionar correctamente.`,
-    `> **Casos negativos:** entradas inválidas, valores límite, estados incorrectos.`,
-    `> **Casos de regresión:** funcionalidad preexistente que no debe verse afectada.`,
-    `>`,
-    `> Usa tablas Markdown o listas numeradas. Sé específico con los valores de prueba cuando el código lo permita.`,
-    ``,
-  ].join("\n");
+  return `## Pruebas\n\n${context}\n`;
 }
